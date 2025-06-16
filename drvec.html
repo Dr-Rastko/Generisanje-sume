@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebGL L-System Forest with Leaves</title>
+  <style>
+    body { margin:0; overflow:hidden; background:#333; }
+    canvas { display:block; }
+    #ui { position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.5); padding:10px; color:white; }
+  </style>
+</head>
+<body>
+<div id="ui">
+  Iterations: <input type="range" min="1" max="4" value="3" id="iter"><br>
+  Branch Angle: <input type="range" min="10" max="80" value="30" id="angle"><br>
+  Branch Length: <input type="range" min="1" max="3" value="2" id="length">
+</div>
+<canvas id="canvas"></canvas>
+<script>
+const canvas = document.getElementById('canvas');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+const gl = canvas.getContext('webgl');
+gl.enable(gl.DEPTH_TEST);
+
+const vsSource = `
+attribute vec3 position;
+uniform mat4 uMatrix;
+void main() {
+  gl_Position = uMatrix * vec4(position, 1.0);
+}`;
+const fsSource = `
+precision mediump float;
+uniform vec4 uColor;
+void main() {
+  gl_FragColor = uColor;
+}`;
+
+function compileShader(type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  return shader;
+}
+const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+const program = gl.createProgram();
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+gl.useProgram(program);
+
+const posLoc = gl.getAttribLocation(program, 'position');
+const matLoc = gl.getUniformLocation(program, 'uMatrix');
+const colorLoc = gl.getUniformLocation(program, 'uColor');
+
+function createCylinder(radius, height, segments) {
+  const verts = [], idx = [];
+  for(let i = 0; i <= segments; i++) {
+    const theta = i * 2 * Math.PI / segments;
+    const x = Math.cos(theta) * radius;
+    const z = Math.sin(theta) * radius;
+    verts.push(x, 0, z);
+    verts.push(x, height, z);
+  }
+  for(let i = 0; i < segments; i++) {
+    const p = i * 2;
+    idx.push(p, p+1, p+2);
+    idx.push(p+1, p+3, p+2);
+  }
+  return {verts: new Float32Array(verts), idx: new Uint16Array(idx)};
+}
+
+function createSphere(radius, latBands, longBands) {
+  const verts = [], idx = [];
+  for(let lat=0; lat <= latBands; lat++) {
+    const theta = lat * Math.PI / latBands;
+    const sinTheta = Math.sin(theta);
+    const cosTheta = Math.cos(theta);
+
+    for(let lon=0; lon <= longBands; lon++) {
+      const phi = lon * 2 * Math.PI / longBands;
+      const sinPhi = Math.sin(phi);
+      const cosPhi = Math.cos(phi);
+
+      const x = cosPhi * sinTheta;
+      const y = cosTheta;
+      const z = sinPhi * sinTheta;
+      verts.push(radius * x, radius * y, radius * z);
+    }
+  }
+  for(let lat=0; lat < latBands; lat++) {
+    for(let lon=0; lon < longBands; lon++) {
+      const first = (lat * (longBands + 1)) + lon;
+      const second = first + longBands + 1;
+      idx.push(first, second, first + 1);
+      idx.push(second, second + 1, first + 1);
+    }
+  }
+  return {verts: new Float32Array(verts), idx: new Uint16Array(idx)};
+}
+
+function createGround(size) {
+  return {
+    verts: new Float32Array([
+      -size,0,-size,
+       size,0,-size,
+       size,0, size,
+      -size,0, size
+    ]),
+    idx: new Uint16Array([0,1,2, 0,2,3])
+  };
+}
+
+const cyl = createCylinder(0.3, 1, 24);
+const sphere = createSphere(0.15, 8, 8);
+const ground = createGround(50);
+
+function createBuffer(data, target, usage) {
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(target, buffer);
+  gl.bufferData(target, data, usage);
+  return buffer;
+}
+const cylVBO = createBuffer(cyl.verts, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
+const cylIBO = createBuffer(cyl.idx, gl.ELEMENT_ARRAY_BUFFER, gl.STATIC_DRAW);
+const sphVBO = createBuffer(sphere.verts, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
+const sphIBO = createBuffer(sphere.idx, gl.ELEMENT_ARRAY_BUFFER, gl.STATIC_DRAW);
+const grdVBO = createBuffer(ground.verts, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
+const grdIBO = createBuffer(ground.idx, gl.ELEMENT_ARRAY_BUFFER, gl.STATIC_DRAW);
+
+function identity() { return [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]; }
+function translate(m,tx,ty,tz){ m[12]+=tx; m[13]+=ty; m[14]+=tz; return m; }
+function rotateY(m,a){ const c=Math.cos(a),s=Math.sin(a);
+  const m0=m[0],m2=m[2],m4=m[4],m6=m[6];
+  m[0]=c*m0-s*m4; m[2]=c*m2-s*m6;
+  m[4]=s*m0+c*m4; m[6]=s*m2+c*m6; return m;
+}
+function scale(m,sx,sy,sz){ m[0]*=sx; m[5]*=sy; m[10]*=sz; return m; }
+function perspective(fov,asp,n,f){
+  const t=Math.tan(fov/2),r=1/(n-f);
+  return [1/(asp*t),0,0,0,0,1/t,0,0,0,0,(f+n)*r,-1,0,0,2*f*n*r,0];
+}
+function multiply(a,b){
+  const o=new Array(16);
+  for(let i=0;i<4;i++) for(let j=0;j<4;j++){
+    o[j*4+i]=0;
+    for(let k=0;k<4;k++) o[j*4+i]+=a[k*4+i]*b[j*4+k];
+  }
+  return o;
+}
+
+const axiom='F';
+const rules={'F':'F[+F]F[-F]F'};
+function generateLSystem(a,r,i){
+  let s=a;
+  for(let n=0;n<i;n++) s=s.split('').map(ch=>r[ch]||ch).join('');
+  return s;
+}
+
+let camX=0,camY=3,camZ=10,rotY=0,rotX=0;
+const keys={}; window.onkeydown=e=>keys[e.key]=1;
+window.onkeyup=e=>keys[e.key]=0;
+canvas.onclick = ()=>canvas.requestPointerLock();
+document.addEventListener('mousemove',e=>{
+  if(document.pointerLockElement===canvas){
+    rotY -= e.movementX*0.002;
+    rotX -= e.movementY*0.002;
+    rotX=Math.max(-Math.PI/2,Math.min(Math.PI/2,rotX));
+  }
+});
+
+const trees=[];
+for(let i=0;i<50;i++) trees.push({x:Math.random()*40-20, z:Math.random()*40-20});
+
+function cameraMatrix(){
+  const m=identity();
+  rotateY(m,rotY);
+  m[13] -= camY;
+  m[12] -= camX * Math.cos(rotY) - camZ * Math.sin(rotY);
+  m[14] -= camZ * Math.cos(rotY) + camX * Math.sin(rotY);
+  return m;
+}
+
+function render(){
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(0.5,0.8,1,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  const iter=+document.getElementById('iter').value;
+  const ang=+document.getElementById('angle').value*Math.PI/180;
+  const len=+document.getElementById('length').value;
+  const lsys=generateLSystem(axiom,rules,iter);
+
+  if(keys['w']){ camX+=Math.sin(rotY)*0.2; camZ-=Math.cos(rotY)*0.2; }
+  if(keys['s']){ camX-=Math.sin(rotY)*0.2; camZ+=Math.cos(rotY)*0.2; }
+  if(keys['a']){ camX+=Math.sin(rotY+Math.PI/2)*0.2; camZ-=Math.cos(rotY+Math.PI/2)*0.2; }
+  if(keys['d']){ camX+=Math.sin(rotY-Math.PI/2)*0.2; camZ-=Math.cos(rotY-Math.PI/2)*0.2; }
+
+  const proj=perspective(Math.PI/4,canvas.width/canvas.height,0.1,100);
+  const view=cameraMatrix();
+
+  drawGround(proj,view);
+  trees.forEach(tree=>{
+    let model=identity();
+    model=translate(model,tree.x,0,tree.z);
+    drawLSystem(lsys,ang,len,model,proj,view);
+  });
+  requestAnimationFrame(render);
+}
+
+function drawGround(proj,view){
+  const model=identity();
+  const mvp=multiply(proj,multiply(view,model));
+  gl.uniformMatrix4fv(matLoc,false,new Float32Array(mvp));
+  gl.uniform4f(colorLoc,0.1,0.6,0.1,1.0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,grdVBO);
+  gl.vertexAttribPointer(posLoc,3,gl.FLOAT,false,0,0);
+  gl.enableVertexAttribArray(posLoc);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,grdIBO);
+  gl.drawElements(gl.TRIANGLES,6,gl.UNSIGNED_SHORT,0);
+}
+
+function drawLSystem(str,angle,length,model,proj,view){
+  const stack=[]; let mat=model.slice();
+  for(let i=0; i<str.length; i++){
+    const c = str[i];
+    switch(c){
+      case 'F':
+        let m=mat.slice();
+        scale(m,0.3,length,0.3);
+        const mvp=multiply(proj,multiply(view,m));
+        gl.uniformMatrix4fv(matLoc,false,new Float32Array(mvp));
+        gl.uniform4f(colorLoc,0.55,0.27,0.07,1.0); // brown branch
+        gl.bindBuffer(gl.ARRAY_BUFFER,cylVBO);
+        gl.vertexAttribPointer(posLoc,3,gl.FLOAT,false,0,0);
+        gl.enableVertexAttribArray(posLoc);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,cylIBO);
+        gl.drawElements(gl.TRIANGLES,cyl.idx.length,gl.UNSIGNED_SHORT,0);
+        mat=translate(mat,0,length,0);
+
+        // Provera da li je naredni znak ']' = kraj grane, pa crtaj list
+        if(i+1 < str.length && str[i+1] === ']'){
+          // nacrtaj list kao zelenu kuglicu na kraju grane
+          let leafMat = mat.slice();
+          scale(leafMat,1,1,1); // Možeš prilagoditi veličinu lišća ovde
+          const leafMVP = multiply(proj,multiply(view,leafMat));
+          gl.uniformMatrix4fv(matLoc,false,new Float32Array(leafMVP));
+          gl.uniform4f(colorLoc,0.0,0.8,0.0,1.0); // zelena boja
+          gl.bindBuffer(gl.ARRAY_BUFFER,sphVBO);
+          gl.vertexAttribPointer(posLoc,3,gl.FLOAT,false,0,0);
+          gl.enableVertexAttribArray(posLoc);
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,sphIBO);
+          gl.drawElements(gl.TRIANGLES,sphere.idx.length,gl.UNSIGNED_SHORT,0);
+        }
+        break;
+      case '+': mat=rotateY(mat,angle); break;
+      case '-': mat=rotateY(mat,-angle); break;
+      case '[': stack.push(mat.slice()); break;
+      case ']': mat=stack.pop(); break;
+    }
+  }
+}
+
+render();
+</script>
+</body>
+</html>
