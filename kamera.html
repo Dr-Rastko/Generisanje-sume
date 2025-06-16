@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebGL L-System Forest (Corrected)</title>
+  <style>
+    body { margin:0; overflow:hidden; background:#333; font-family: 'Inter', sans-serif; cursor: grab; }
+    body:active { cursor: grabbing; }
+    canvas { display:block; }
+    #ui { 
+        position:absolute; 
+        top:10px; 
+        left:10px; 
+        background:rgba(0,0,0,0.7); 
+        padding:15px; 
+        color:white; 
+        border-radius: 10px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        z-index: 10;
+    }
+    #ui label { display: block; margin-bottom: 10px; }
+    #ui input[type="range"] {
+        width: 150px;
+        vertical-align: middle;
+        -webkit-appearance: none;
+        height: 8px;
+        background: #ddd;
+        outline: none;
+        opacity: 0.7;
+        -webkit-transition: .2s;
+        transition: opacity .2s;
+        border-radius: 5px;
+    }
+    #ui input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #4CAF50;
+        cursor: pointer;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    #ui input[type="range"]::-moz-range-thumb {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #4CAF50;
+        cursor: pointer;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+  </style>
+</head>
+<body>
+<div id="ui">
+  <label>Ponavljanja: <input type="range" min="1" max="4" value="3" id="iter"></label>
+  <label>Ugao grane: <input type="range" min="10" max="90" value="25" id="angle"></label>
+  <label>Dužina grane: <input type="range" min="0.5" max="3" value="1.5" id="length" step="0.1"></label>
+</div>
+<canvas id="canvas"></canvas>
+<script>
+// Pronalazi kanvas i dobavlja WebGL kontekst
+const canvas = document.getElementById('canvas');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+const gl = canvas.getContext('webgl');
+gl.enable(gl.DEPTH_TEST); // Uključuje proveru dubine za pravilno 3D iscrtavanje
+
+// Vertex Shader kod
+const vsSource = `
+attribute vec3 position;
+uniform mat4 uMatrix;
+void main() {
+  gl_Position = uMatrix * vec4(position, 1.0);
+}`;
+// Fragment Shader kod
+const fsSource = `
+precision mediump float;
+uniform vec4 uColor;
+void main() {
+  gl_FragColor = uColor;
+}`;
+
+// Funkcija za kompajliranje shadera
+function compileShader(type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.error('Greška pri kompajliranju shadera:', gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+
+// Kompajliranje vertex i fragment shadera
+const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+
+// Kreiranje WebGL programa, povezivanje shadera
+const program = gl.createProgram();
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+  console.error('Greška pri linkovanju programa:', gl.getProgramInfoLog(program));
+  gl.deleteProgram(program);
+}
+gl.useProgram(program); // Koristi kreirani program
+
+// Dobavljanje lokacija atributa i uniformi
+const posLoc = gl.getAttribLocation(program, 'position');
+const matLoc = gl.getUniformLocation(program, 'uMatrix');
+const colorLoc = gl.getUniformLocation(program, 'uColor');
+
+// --- Funkcije za kreiranje geometrije ---
+
+function createCylinder(radius, height, segments) {
+  const verts = [], idx = [];
+  for(let i = 0; i <= segments; i++) {
+    const theta = i * 2 * Math.PI / segments;
+    const x = Math.cos(theta) * radius;
+    const z = Math.sin(theta) * radius;
+    verts.push(x, 0, z); // Donji vertex
+    verts.push(x, height, z); // Gornji vertex
+  }
+  for(let i = 0; i < segments; i++) {
+    const p = i * 2;
+    idx.push(p, p+1, p+2);
+    idx.push(p+1, p+3, p+2);
+  }
+  return {verts: new Float32Array(verts), idx: new Uint16Array(idx)};
+}
+
+function createSphere(radius, latBands, longBands) {
+  const verts = [], idx = [];
+  for(let lat=0; lat <= latBands; lat++) {
+    const theta = lat * Math.PI / latBands;
+    const sinTheta = Math.sin(theta);
+    const cosTheta = Math.cos(theta);
+    for(let lon=0; lon <= longBands; lon++) {
+      const phi = lon * 2 * Math.PI / longBands;
+      const sinPhi = Math.sin(phi);
+      const cosPhi = Math.cos(phi);
+      const x = cosPhi * sinTheta;
+      const y = cosTheta;
+      const z = sinPhi * sinTheta;
+      verts.push(radius * x, radius * y, radius * z);
+    }
+  }
+  for(let lat=0; lat < latBands; lat++) {
+    for(let lon=0; lon < longBands; lon++) {
+      const first = (lat * (longBands + 1)) + lon;
+      const second = first + longBands + 1;
+      idx.push(first, second, first + 1);
+      idx.push(second, second + 1, first + 1);
+    }
+  }
+  return {verts: new Float32Array(verts), idx: new Uint16Array(idx)};
+}
+
+function createGround(size) {
+  return {
+    verts: new Float32Array([-size,0,-size, size,0,-size, size,0, size, -size,0, size]),
+    idx: new Uint16Array([0,1,2, 0,2,3])
+  };
+}
+
+// Kreiranje geometrije za cilindar, sferu i tlo
+const cyl = createCylinder(0.1, 1, 12);
+const sphere = createSphere(0.25, 8, 8);
+const ground = createGround(50);
+
+// Funkcija za kreiranje WebGL bafera
+function createBuffer(data, target, usage) {
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(target, buffer);
+  gl.bufferData(target, data, usage);
+  return buffer;
+}
+
+// Kreiranje Vertex Buffer Objects (VBOs) i Index Buffer Objects (IBOs)
+const cylVBO = createBuffer(cyl.verts, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
+const cylIBO = createBuffer(cyl.idx, gl.ELEMENT_ARRAY_BUFFER, gl.STATIC_DRAW);
+const sphVBO = createBuffer(sphere.verts, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
+const sphIBO = createBuffer(sphere.idx, gl.ELEMENT_ARRAY_BUFFER, gl.STATIC_DRAW);
+const grdVBO = createBuffer(ground.verts, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
+const grdIBO = createBuffer(ground.idx, gl.ELEMENT_ARRAY_BUFFER, gl.STATIC_DRAW);
+
+// --- ISPRAVLJENE MATRIČNE FUNKCIJE ---
+
+// Kreira jediničnu 4x4 matricu
+function identity() { return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]); }
+
+// Množi dve matrice (a * b)
+function multiply(a, b) {
+  const out = new Float32Array(16);
+  const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+  const a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+  const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+  const a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+  let b0, b1, b2, b3;
+
+  b0=b[0]; b1=b[1]; b2=b[2]; b3=b[3];
+  out[0] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+  out[1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+  out[2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+  out[3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+  b0=b[4]; b1=b[5]; b2=b[6]; b3=b[7];
+  out[4] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+  out[5] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+  out[6] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+  out[7] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+  b0=b[8]; b1=b[9]; b2=b[10]; b3=b[11];
+  out[8] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+  out[9] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+  out[10]= b0*a02 + b1*a12 + b2*a22 + b3*a32;
+  out[11]= b0*a03 + b1*a13 + b2*a23 + b3*a33;
+  b0=b[12]; b1=b[13]; b2=b[14]; b3=b[15];
+  out[12]= b0*a00 + b1*a10 + b2*a20 + b3*a30;
+  out[13]= b0*a01 + b1*a11 + b2*a21 + b3*a31;
+  out[14]= b0*a02 + b1*a12 + b2*a22 + b3*a32;
+  out[15]= b0*a03 + b1*a13 + b2*a23 + b3*a33;
+  return out;
+}
+
+// Translira matricu
+function translate(m, tx, ty, tz) {
+  const out = new Float32Array(m);
+  out[12] = m[12] + tx;
+  out[13] = m[13] + ty;
+  out[14] = m[14] + tz;
+  return out;
+}
+
+// Skalira matricu
+function scale(m, sx, sy, sz) {
+  const out = new Float32Array(m);
+  out[0] *= sx; out[1] *= sx; out[2] *= sx;
+  out[4] *= sy; out[5] *= sy; out[6] *= sy;
+  out[8] *= sz; out[9] *= sz; out[10] *= sz;
+  return out;
+}
+
+// Rotira matricu oko ose (post-multiplication)
+function rotate(m, angle, axis) {
+    let [x, y, z] = axis;
+    const len = Math.hypot(x, y, z);
+    if (len < 1e-6) { return m; }
+    const s = Math.sin(angle);
+    const c = Math.cos(angle);
+    const t = 1 - c;
+    
+    const rot = identity();
+    rot[0] = x*x*t + c;   rot[1] = y*x*t + z*s; rot[2] = z*x*t - y*s;
+    rot[4] = x*y*t - z*s; rot[5] = y*y*t + c;   rot[6] = z*y*t + x*s;
+    rot[8] = x*z*t + y*s; rot[9] = y*z*t - x*s; rot[10] = z*z*t + c;
+
+    return multiply(m, rot);
+}
+
+// Kreira perspektivnu projekcijsku matricu
+function perspective(fov, asp, n, f){
+  const t=Math.tan(fov/2);
+  return new Float32Array([1/(asp*t),0,0,0, 0,1/t,0,0, 0,0,(f+n)/(n-f),-1, 0,0,(2*f*n)/(n-f),0]);
+}
+
+// Kreira view matricu (kamera)
+function lookAt(eye, center, up) {
+  const z0=eye[0]-center[0], z1=eye[1]-center[1], z2=eye[2]-center[2];
+  let l=1/Math.hypot(z0,z1,z2);
+  const nz0=z0*l, nz1=z1*l, nz2=z2*l;
+  const x0=up[1]*nz2-up[2]*nz1, x1=up[2]*nz0-up[0]*nz2, x2=up[0]*nz1-up[1]*nz0;
+  l=1/Math.hypot(x0,x1,x2);
+  const nx0=x0*l, nx1=x1*l, nx2=x2*l;
+  const y0=nz1*nx2-nz2*nx1, y1=nz2*nx0-nz0*nx2, y2=nz0*nx1-nz1*nx0;
+  const d0=-(nx0*eye[0]+nx1*eye[1]+nx2*eye[2]);
+  const d1=-(y0*eye[0]+y1*eye[1]+y2*eye[2]);
+  const d2=-(nz0*eye[0]+nz1*eye[1]+nz2*eye[2]);
+  return new Float32Array([nx0,y0,nz0,0, nx1,y1,nz1,0, nx2,y2,nz2,0, d0,d1,d2,1]);
+}
+
+// --- L-Sistem ---
+const axiom='F';
+// Dodati simboli za 3D rotaciju: & (pitch down), ^ (pitch up)
+const rules={'F':'F[+&F]F[-^F]'}; 
+function generateLSystem(a,r,i){
+  let s=a;
+  for(let n=0;n<i;n++) s=s.split('').map(ch=>r[ch]||ch).join('');
+  return s;
+}
+
+// --- Kontrola kamere ---
+let cameraDistance = 35;
+let cameraOrbitTheta = 0;
+let cameraOrbitPhi = Math.PI / 3;
+const cameraTargetY = 7;
+let isDragging = false;
+let lastMouseX, lastMouseY;
+
+canvas.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  lastMouseX = e.clientX;
+  lastMouseY = e.clientY;
+});
+document.addEventListener('mouseup', () => { isDragging = false; });
+document.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const deltaX = e.clientX - lastMouseX;
+  const deltaY = e.clientY - lastMouseY;
+  cameraOrbitTheta -= deltaX * 0.005;
+  cameraOrbitPhi -= deltaY * 0.005;
+  cameraOrbitPhi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraOrbitPhi));
+  lastMouseX = e.clientX;
+  lastMouseY = e.clientY;
+});
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  cameraDistance += e.deltaY * 0.1;
+  cameraDistance = Math.max(5, Math.min(100, cameraDistance));
+});
+
+// Generisanje pozicija za drveće
+const trees=[];
+for(let i=0;i<50;i++) trees.push({x:Math.random()*60-30, z:Math.random()*60-30, rot: Math.random() * Math.PI * 2});
+
+function cameraMatrix(){
+  const target = [0, cameraTargetY, 0];
+  const camX = target[0] + cameraDistance * Math.sin(cameraOrbitPhi) * Math.sin(cameraOrbitTheta);
+  const camY = target[1] + cameraDistance * Math.cos(cameraOrbitPhi);
+  const camZ = target[2] + cameraDistance * Math.sin(cameraOrbitPhi) * Math.cos(cameraOrbitTheta);
+  return lookAt([camX, camY, camZ], target, [0, 1, 0]);
+}
+
+// Glavna petlja za iscrtavanje
+function render(){
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(0.5,0.8,1,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+
+  const iter=+document.getElementById('iter').value;
+  const ang=+document.getElementById('angle').value*Math.PI/180;
+  const len=+document.getElementById('length').value;
+  const lsys=generateLSystem(axiom,rules,iter);
+
+  const proj=perspective(Math.PI/4,canvas.width/canvas.height,0.1,200);
+  const view=cameraMatrix();
+
+  drawGround(proj,view);
+
+  trees.forEach(tree=>{
+    let model=identity();
+    model=translate(model,tree.x,0,tree.z);
+    model = rotate(model, tree.rot, [0, 1, 0]); // Daje svakom drvetu nasumičnu početnu rotaciju
+    drawLSystem(lsys,ang,len,model,proj,view);
+  });
+
+  requestAnimationFrame(render);
+}
+
+function drawPrimitive(vbo, ibo, count, color, mvp) {
+    gl.uniformMatrix4fv(matLoc, false, mvp);
+    gl.uniform4fv(colorLoc, color);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(posLoc);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, 0);
+}
+
+function drawGround(proj,view){
+  const model=identity();
+  const mvp=multiply(proj,view); // MVP za tlo je samo P*V
+  drawPrimitive(grdVBO, grdIBO, ground.idx.length, [0.2,0.5,0.2,1.0], mvp);
+}
+
+function drawLSystem(str,angle,length,model,proj,view){
+  const stack=[];
+  let mat=model; 
+
+  for(let i=0; i<str.length; i++){
+    const c = str[i];
+    switch(c){
+      case 'F': // 'F' = Iscrtaj granu i pomeri se napred
+        let branchMVP = multiply(proj, multiply(view, scale(mat,1,length,1)));
+        drawPrimitive(cylVBO, cylIBO, cyl.idx.length, [0.55,0.27,0.07,1.0], branchMVP);
+        mat=translate(mat,0,length,0);
+
+        // Iscrtaj list na kraju grane
+        if(i + 1 >= str.length || str[i+1] === ']'){
+            let leafMVP = multiply(proj, multiply(view, mat));
+            drawPrimitive(sphVBO, sphIBO, sphere.idx.length, [0.1,0.8,0.2,1.0], leafMVP);
+        }
+        break;
+      case '+': mat=rotate(mat, angle, [0,1,0]); break;  // Yaw desno
+      case '-': mat=rotate(mat, -angle, [0,1,0]); break; // Yaw levo
+      case '&': mat=rotate(mat, angle, [1,0,0]); break;  // Pitch dole
+      case '^': mat=rotate(mat, -angle, [1,0,0]); break; // Pitch gore
+      case '[': stack.push(new Float32Array(mat)); break; 
+      case ']': mat=stack.pop(); break;
+    }
+  }
+}
+
+// Pokreni render petlju kada se prozor učita
+window.onload = render;
+// Ažuriraj veličinu kanvasa ako se promeni veličina prozora
+window.onresize = () => {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+};
+</script>
+</body>
+</html>
