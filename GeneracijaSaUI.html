@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebGL L-System Forest | Optimizovana verzija sa kontrolama</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #1a1a2a; font-family: 'Inter', sans-serif; }
+    canvas { display: block; cursor: grab; }
+    canvas:active { cursor: grabbing; }
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+    }
+    #ui button {
+      font-size: 16px;
+      padding: 10px 20px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+      transition: background-color 0.3s;
+      margin-bottom: 10px;
+      display: block;
+      width: 200px;
+    }
+    #ui button:hover {
+      background-color: #45a049;
+    }
+    #controls {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      background: rgba(0, 0, 0, 0.8);
+      padding: 20px;
+      border-radius: 10px;
+      color: white;
+      min-width: 300px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    #controls h3 {
+      margin-top: 0;
+      margin-bottom: 15px;
+      color: #4CAF50;
+      text-align: center;
+    }
+    .control-group {
+      margin-bottom: 15px;
+    }
+    .control-group label {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 14px;
+      color: #ccc;
+    }
+    .control-group input[type="range"] {
+      width: 100%;
+      margin-bottom: 5px;
+    }
+    .control-group input[type="number"] {
+      width: 60px;
+      padding: 5px;
+      border: 1px solid #555;
+      border-radius: 3px;
+      background: #333;
+      color: white;
+      font-size: 12px;
+    }
+    .value-display {
+      display: inline-block;
+      background: #333;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 12px;
+      color: #4CAF50;
+      float: right;
+    }
+    .slider-container {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .slider-container input[type="range"] {
+      flex: 1;
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      height: 6px;
+      border-radius: 3px;
+      background: #333;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #4CAF50;
+      cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #4CAF50;
+      cursor: pointer;
+      border: none;
+    }
+  </style>
+</head>
+<body>
+
+<div id="ui">
+  <button id="regenerate">Generiši novu šumu</button>
+</div>
+
+<div id="controls">
+  <h3>Kontrole drveća</h3>
+  
+  <div class="control-group">
+    <label>Broj iteracija (složenost): <span class="value-display" id="iterationsValue">3</span></label>
+    <div class="slider-container">
+      <input type="range" id="iterations" min="1" max="5" value="3" step="1">
+    </div>
+  </div>
+  
+  <div class="control-group">
+    <label>Ugao grana (stepeni): <span class="value-display" id="angleValue">25°</span></label>
+    <div class="slider-container">
+      <input type="range" id="angle" min="10" max="60" value="25" step="5">
+    </div>
+  </div>
+  
+  <div class="control-group">
+    <label>Dužina segmenta: <span class="value-display" id="lengthValue">1.7</span></label>
+    <div class="slider-container">
+      <input type="range" id="length" min="0.5" max="3.0" value="1.7" step="0.1">
+    </div>
+  </div>
+  
+  <div class="control-group">
+    <label>Debljina debla: <span class="value-display" id="trunkScaleValue">3.5</span></label>
+    <div class="slider-container">
+      <input type="range" id="trunkScale" min="1.0" max="6.0" value="3.5" step="0.1">
+    </div>
+  </div>
+  
+  <div class="control-group">
+    <label>Faktor sužavanja: <span class="value-display" id="taperValue">0.12</span></label>
+    <div class="slider-container">
+      <input type="range" id="taper" min="0.05" max="0.25" value="0.12" step="0.01">
+    </div>
+  </div>
+  
+  <div class="control-group">
+    <label>Smanjenje grane: <span class="value-display" id="branchScaleValue">0.35</span></label>
+    <div class="slider-container">
+      <input type="range" id="branchScale" min="0.2" max="0.6" value="0.35" step="0.05">
+    </div>
+  </div>
+  
+  <div class="control-group">
+    <label>Broj drveća: <span class="value-display" id="numTreesValue">70</span></label>
+    <div class="slider-container">
+      <input type="range" id="numTrees" min="10" max="150" value="70" step="10">
+    </div>
+  </div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+// --- GLOBALNE POSTAVKE ---
+let NUM_TREES = 70;
+const GROUND_SIZE = 80;
+const MIN_TREE_SEPARATION = 10;
+
+// --- PARAMETRI DRVEĆA ---
+let treeParams = {
+  iterations: 3,
+  angle: 25,
+  length: 1.7,
+  trunkScale: 3.5,
+  taper: 0.12,
+  branchScale: 0.35
+};
+
+// --- WebGL INICIJALIZACIJA ---
+const canvas = document.getElementById('canvas');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+const gl = canvas.getContext('webgl');
+if (!gl) alert('WebGL nije podržan.');
+gl.enable(gl.DEPTH_TEST);
+
+// --- SHADERI I PROGRAM ---
+const vsSource = `attribute vec3 a_position; uniform mat4 u_mvpMatrix; void main() { gl_Position = u_mvpMatrix * vec4(a_position, 1.0); }`;
+const fsSource = `precision mediump float; uniform vec4 u_color; void main() { gl_FragColor = u_color; }`;
+
+function createShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error('Shader error:', gl.getShaderInfoLog(shader));
+        return null;
+    }
+    return shader;
+}
+
+function createProgram(vs, fs) {
+    const program = gl.createProgram();
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error('Program error:', gl.getProgramInfoLog(program));
+        return null;
+    }
+    return program;
+}
+
+const program = createProgram(
+    createShader(gl.VERTEX_SHADER, vsSource),
+    createShader(gl.FRAGMENT_SHADER, fsSource)
+);
+gl.useProgram(program);
+
+const posLoc = gl.getAttribLocation(program, 'a_position');
+const mvpMatrixLoc = gl.getUniformLocation(program, 'u_mvpMatrix');
+const colorLoc = gl.getUniformLocation(program, 'u_color');
+
+// --- GEOMETRIJA ---
+function createCylinder(r, h, s) {
+    const v = [], i = [];
+    for(let j = 0; j <= s; j++) {
+        const a = j * 2 * Math.PI / s;
+        const x = Math.cos(a) * r, z = Math.sin(a) * r;
+        v.push(x, 0, z, x, h, z);
+    }
+    for(let j = 0; j < s; j++) {
+        const p = j * 2;
+        i.push(p, p + 1, p + 2, p + 1, p + 3, p + 2);
+    }
+    return { verts: new Float32Array(v), idx: new Uint16Array(i) };
+}
+
+// Manja sfera za listove
+function createSphere(r, lat, lon) {
+    const v = [], i = [];
+    for(let a = 0; a <= lat; a++) {
+        const th = a * Math.PI / lat;
+        const sth = Math.sin(th), cth = Math.cos(th);
+        for(let b = 0; b <= lon; b++) {
+            const p = b * 2 * Math.PI / lon;
+            const sp = Math.sin(p), cp = Math.cos(p);
+            v.push(r * cp * sth, r * cth, r * sp * sth);
+        }
+    }
+    for(let a = 0; a < lat; a++) {
+        for(let b = 0; b < lon; b++) {
+            const f = (a * (lon + 1)) + b;
+            const s = f + lon + 1;
+            i.push(f, s, f + 1, s, s + 1, f + 1);
+        }
+    }
+    return { verts: new Float32Array(v), idx: new Uint16Array(i) };
+}
+
+function createGround(s) {
+    return {
+        verts: new Float32Array([-s, 0, -s, s, 0, -s, s, 0, s, -s, 0, s]),
+        idx: new Uint16Array([0, 1, 2, 0, 2, 3])
+    };
+}
+
+// Geometrija za grane i listove
+const branchGeom = createCylinder(0.08, 1, 6);
+const leafGeom = createSphere(0.18, 5, 5);
+const groundGeom = createGround(GROUND_SIZE);
+
+function createBuffer(data, type, usage) {
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(type, buffer);
+    gl.bufferData(type, data, usage);
+    return buffer;
+}
+
+const branchVBO = createBuffer(branchGeom.verts, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
+const branchIBO = createBuffer(branchGeom.idx, gl.ELEMENT_ARRAY_BUFFER, gl.STATIC_DRAW);
+const leafVBO = createBuffer(leafGeom.verts, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
+const leafIBO = createBuffer(leafGeom.idx, gl.ELEMENT_ARRAY_BUFFER, gl.STATIC_DRAW);
+const groundVBO = createBuffer(groundGeom.verts, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
+const groundIBO = createBuffer(groundGeom.idx, gl.ELEMENT_ARRAY_BUFFER, gl.STATIC_DRAW);
+
+// --- MATRIČNA MATEMATIKA ---
+const m4 = {
+    identity: () => new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]),
+    
+    multiply: (a, b) => {
+        const result = new Float32Array(16);
+        for(let i = 0; i < 4; i++) {
+            for(let j = 0; j < 4; j++) {
+                let sum = 0;
+                for(let k = 0; k < 4; k++) {
+                    sum += a[i + k * 4] * b[k + j * 4];
+                }
+                result[i + j * 4] = sum;
+            }
+        }
+        return result;
+    },
+    
+    translate: (m, x, y, z) => m4.multiply(m, [1,0,0,0,0,1,0,0,0,0,1,0,x,y,z,1]),
+    scale: (m, x, y, z) => m4.multiply(m, [x,0,0,0,0,y,0,0,0,0,z,0,0,0,0,1]),
+    
+    rotate: (m, angle, axis) => {
+        let [x, y, z] = axis;
+        const len = Math.hypot(x, y, z);
+        if(len < 1e-6) return m;
+        x /= len; y /= len; z /= len;
+        
+        const s = Math.sin(angle), c = Math.cos(angle), t = 1 - c;
+        const rot = m4.identity();
+        rot[0] = x * x * t + c;     rot[1] = y * x * t + z * s; rot[2] = z * x * t - y * s;
+        rot[4] = x * y * t - z * s; rot[5] = y * y * t + c;     rot[6] = z * y * t + x * s;
+        rot[8] = x * z * t + y * s; rot[9] = y * z * t - x * s; rot[10] = z * z * t + c;
+        return m4.multiply(m, rot);
+    },
+    
+    perspective: (fov, aspect, near, far) => {
+        const tan = Math.tan(fov / 2);
+        return new Float32Array([
+            1/(aspect * tan), 0, 0, 0,
+            0, 1/tan, 0, 0,
+            0, 0, (far + near)/(near - far), -1,
+            0, 0, 2 * far * near/(near - far), 0
+        ]);
+    },
+    
+    lookAt: (eye, center, up) => {
+        const z = new Float32Array([eye[0] - center[0], eye[1] - center[1], eye[2] - center[2]]);
+        let len = 1 / Math.hypot(z[0], z[1], z[2]);
+        z[0] *= len; z[1] *= len; z[2] *= len;
+        
+        const x = new Float32Array([up[1] * z[2] - up[2] * z[1], up[2] * z[0] - up[0] * z[2], up[0] * z[1] - up[1] * z[0]]);
+        len = 1 / Math.hypot(x[0], x[1], x[2]);
+        x[0] *= len; x[1] *= len; x[2] *= len;
+        
+        const y = new Float32Array([z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]]);
+        
+        return new Float32Array([
+            x[0], y[0], z[0], 0,
+            x[1], y[1], z[1], 0,
+            x[2], y[2], z[2], 0,
+            -(x[0] * eye[0] + x[1] * eye[1] + x[2] * eye[2]),
+            -(y[0] * eye[0] + y[1] * eye[1] + y[2] * eye[2]),
+            -(z[0] * eye[0] + z[1] * eye[1] + z[2] * eye[2]),
+            1
+        ]);
+    }
+};
+
+// --- L-SISTEM ---
+const lSystemPresets = {
+    'simple3d': { axiom: 'F', rules: { 'F': 'F[+F][-F][/F][\\F]' } },
+    'minimal3d': { axiom: 'X', rules: { 'X': 'F[+X][-X][/X]', 'F': 'F' } },
+    'basic3d': { axiom: 'F', rules: { 'F': 'FF[+F][-F][\\F]' } }
+};
+const presetKeys = Object.keys(lSystemPresets);
+
+function generateLSystem(axiom, rules, iterations) {
+    let current = axiom;
+    for(let i = 0; i < iterations; i++) {
+        let next = '';
+        for(const char of current) {
+            next += rules[char] || char;
+        }
+        current = next;
+    }
+    return current;
+}
+
+// --- KLASA ZA DRVO ---
+class Tree {
+    constructor(x, z) {
+        this.x = x;
+        this.z = z;
+        this.rotY = Math.random() * Math.PI * 2;
+        
+        const randomType = presetKeys[Math.floor(Math.random() * presetKeys.length)];
+        const preset = lSystemPresets[randomType];
+        
+        this.preset = preset;
+        
+        this.regenerate();
+    }
+    
+    regenerate() {
+        this.lSystemString = generateLSystem(this.preset.axiom, this.preset.rules, treeParams.iterations);
+    }
+    
+    draw(viewProjMatrix) {
+        let initialMatrix = m4.translate(m4.identity(), this.x, 0, this.z);
+        initialMatrix = m4.rotate(initialMatrix, this.rotY, [0, 1, 0]);
+        
+        const stack = [];
+        let currentMatrix = initialMatrix;
+        let branchScale = treeParams.trunkScale;
+        let segmentCount = 0;
+        let branchLevel = 0;
+        
+        const angle = treeParams.angle * Math.PI / 180;
+        
+        for(const char of this.lSystemString) {
+            switch(char) {
+                case 'F':
+                    if(branchLevel === 0) {
+                        const taper = Math.max(0.3, 1 - (segmentCount * treeParams.taper));
+                        branchScale = treeParams.trunkScale * taper;
+                        segmentCount++;
+                    }
+                    
+                    const scaledMatrix = m4.scale(currentMatrix, branchScale, treeParams.length, branchScale);
+                    drawPrimitive(branchVBO, branchIBO, branchGeom.idx.length, [0.55, 0.27, 0.07, 1.0], m4.multiply(viewProjMatrix, scaledMatrix));
+                    currentMatrix = m4.translate(currentMatrix, 0, treeParams.length, 0);
+                    break;
+                    
+                case '+':
+                    currentMatrix = m4.rotate(currentMatrix, angle, [0, 0, 1]);
+                    break;
+                    
+                case '-':
+                    currentMatrix = m4.rotate(currentMatrix, -angle, [0, 0, 1]);
+                    break;
+                    
+                case '/':
+                    currentMatrix = m4.rotate(currentMatrix, angle, [1, 0, 0]);
+                    break;
+                    
+                case '\\':
+                    currentMatrix = m4.rotate(currentMatrix, -angle, [1, 0, 0]);
+                    break;
+                    
+                case '&':
+                    currentMatrix = m4.rotate(currentMatrix, angle, [0, 1, 0]);
+                    break;
+                    
+                case '^':
+                    currentMatrix = m4.rotate(currentMatrix, -angle, [0, 1, 0]);
+                    break;
+                    
+                case '[':
+                    stack.push({
+                        matrix: currentMatrix,
+                        scale: branchScale,
+                        level: branchLevel,
+                        segments: segmentCount
+                    });
+                    branchLevel++;
+                    segmentCount = 0;
+                    
+                    if(branchLevel === 1) branchScale *= treeParams.branchScale;
+                    else if(branchLevel === 2) branchScale *= 0.55; 
+                    else if(branchLevel === 3) branchScale *= 0.65; 
+                    else branchScale *= 0.75;
+                    break;
+                    
+                case ']':
+                    drawPrimitive(leafVBO, leafIBO, leafGeom.idx.length, [0.2, 0.7, 0.2, 1.0], 
+                        m4.multiply(viewProjMatrix, m4.scale(currentMatrix, 0.9, 0.9, 0.9)));
+                    
+                    const popped = stack.pop();
+                    currentMatrix = popped.matrix;
+                    branchScale = popped.scale;
+                    branchLevel = popped.level;
+                    segmentCount = popped.segments;
+                    break;
+            }
+        }
+    }
+}
+
+// --- ŠUMA ---
+let forest = [];
+
+function createForest() {
+    forest = [];
+    const positions = [];
+    
+    for(let i = 0; i < NUM_TREES; i++) {
+        let attempts = 0;
+        while(attempts < 100) {
+            const x = Math.random() * GROUND_SIZE * 1.8 - GROUND_SIZE * 0.9;
+            const z = Math.random() * GROUND_SIZE * 1.8 - GROUND_SIZE * 0.9;
+            
+            const isTooClose = positions.some(pos => 
+                Math.hypot(x - pos.x, z - pos.z) < MIN_TREE_SEPARATION
+            );
+            
+            if(!isTooClose) {
+                positions.push({ x, z });
+                forest.push(new Tree(x, z));
+                break;
+            }
+            attempts++;
+        }
+    }
+}
+
+function regenerateForest() {
+    for(const tree of forest) {
+        tree.regenerate();
+    }
+}
+
+// --- KONTROLA KAMERE ---
+let camDist = 70, camTheta = 0, camPhi = Math.PI / 3;
+const camTargetY = 10;
+let isDragging = false, lastMouseX, lastMouseY;
+
+canvas.addEventListener('mousedown', e => {
+    isDragging = true;
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+});
+
+document.addEventListener('mouseup', () => isDragging = false);
+
+document.addEventListener('mousemove', e => {
+    if(!isDragging) return;
+    
+    camTheta -= (e.clientX - lastMouseX) * 0.005;
+    camPhi -= (e.clientY - lastMouseY) * 0.005;
+    camPhi = Math.max(0.1, Math.min(Math.PI - 0.2, camPhi));
+    
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+});
+
+canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    camDist = Math.max(15, Math.min(250, camDist + e.deltaY * 0.1));
+});
+
+// --- UI KONTROLE ---
+function setupControls() {
+    const controls = {
+        iterations: document.getElementById('iterations'),
+        angle: document.getElementById('angle'),
+        length: document.getElementById('length'),
+        trunkScale: document.getElementById('trunkScale'),
+        taper: document.getElementById('taper'),
+        branchScale: document.getElementById('branchScale'),
+        numTrees: document.getElementById('numTrees')
+    };
+    
+    const displays = {
+        iterations: document.getElementById('iterationsValue'),
+        angle: document.getElementById('angleValue'),
+        length: document.getElementById('lengthValue'),
+        trunkScale: document.getElementById('trunkScaleValue'),
+        taper: document.getElementById('taperValue'),
+        branchScale: document.getElementById('branchScaleValue'),
+        numTrees: document.getElementById('numTreesValue')
+    };
+    
+    // Funkcija za update display vrednosti
+    function updateDisplay(param, value) {
+        if (param === 'angle') {
+            displays[param].textContent = value + '°';
+        } else {
+            displays[param].textContent = value;
+        }
+    }
+    
+    // Event listeneri za kontrole
+    Object.keys(controls).forEach(param => {
+        const control = controls[param];
+        const display = displays[param];
+        
+        control.addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            
+            if (param === 'numTrees') {
+                NUM_TREES = value;
+                updateDisplay(param, value);
+                createForest(); // Regeneriši šumu sa novim brojem drveća
+            } else {
+                treeParams[param] = value;
+                updateDisplay(param, value);
+                regenerateForest(); // Regeneriši postojeća drveća
+            }
+        });
+        
+        // Inicijalni display
+        updateDisplay(param, control.value);
+    });
+}
+
+// --- RENDER ---
+function render() {
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0.2, 0.35, 0.5, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    
+    const camX = camDist * Math.sin(camPhi) * Math.sin(camTheta);
+    const camY = camTargetY + camDist * Math.cos(camPhi);
+    const camZ = camDist * Math.sin(camPhi) * Math.cos(camTheta);
+    
+    const viewMatrix = m4.lookAt([camX, camY, camZ], [0, camTargetY, 0], [0, 1, 0]);
+    const projMatrix = m4.perspective(Math.PI / 4, canvas.width / canvas.height, 0.1, 500);
+    const viewProjMatrix = m4.multiply(projMatrix, viewMatrix);
+    
+    drawPrimitive(groundVBO, groundIBO, groundGeom.idx.length, [0.3, 0.5, 0.3, 1.0], viewProjMatrix);
+    
+    for(const tree of forest) {
+        tree.draw(viewProjMatrix);
+    }
+    
+    requestAnimationFrame(render);
+}
+
+function drawPrimitive(vbo, ibo, count, color, mvpMatrix) {
+    gl.uniformMatrix4fv(mvpMatrixLoc, false, mvpMatrix);
+    gl.uniform4fv(colorLoc, color);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(posLoc);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, 0);
+}
+
+// --- POKRETANJE ---
+document.getElementById('regenerate').addEventListener('click', createForest);
+
+window.onload = () => {
+    setupControls();
+    createForest();
+    render();
+};
+
+window.onresize = () => {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+};
+
+</script>
+</body>
+</html>
